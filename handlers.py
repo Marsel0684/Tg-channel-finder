@@ -171,3 +171,24 @@ async def _do_search(message: Message, query: str):
         await wait_msg.edit_text(
             "❌ Произошла ошибка при поиске. Попробуй снова."
         )
+
+
+@router.message(Command("categories"))
+async def cmd_categories(message: Message):
+    if not _check_access(message.from_user.id):
+        return
+
+    text = (
+        "📂 <b>Категории для поиска</b>\n\n"
+        "Бот автоматически подбирает категорию по запросу:\n\n"
+        "🎯 <b>маркетинг / реклама / таргет / SMM</b>\n"
+        "   → Маркетинг & PR\n\n"
+        "💼 <b>бизнес / продажи / заработок</b>\n"
+        "   → Бизнес & финансы\n\n"
+        "📚 <b>инфобиз / курс / обучение</b>\n"
+        "   → Образование & Книги\n\n"
+        "🤖 <b>нейросети / AI / digital / SEO</b>\n"
+        "   → Технологии & IT + Маркетинг & PR\n\n"
+        "Просто пиши запрос — категория подберётся сама!"
+    )
+    await message.answer(text)

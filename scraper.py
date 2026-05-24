@@ -1,13 +1,12 @@
 """
-scraper.py — парсинг каталогов Telegram-каналов.
-Источники: tgsearch.org, telemetr.me
+scraper.py — парсинг tgsearch.org по категориям + ключевым словам.
 """
 
 import logging
 import re
 import httpx
 from bs4 import BeautifulSoup
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from config import MIN_SUBSCRIBERS
 
 logger = logging.getLogger(__name__)
@@ -21,16 +20,44 @@ HEADERS = {
     "Accept-Language": "ru-RU,ru;q=0.9",
 }
 
+# ── Карта: ключевые слова → категории tgsearch.org ────────
+# При поиске бот автоматически добавляет нужные категории
+KEYWORD_TO_CATEGORIES: dict[str, list[str]] = {
+    "маркетинг":        ["Маркетинг & PR", "Бизнес & финансы"],
+    "реклама":          ["Маркетинг & PR", "Бизнес & финансы"],
+    "таргет":           ["Маркетинг & PR"],
+    "таргетинг":        ["Маркетинг & PR"],
+    "smm":              ["Маркетинг & PR", "Блогеры"],
+    "инфобиз":          ["Образование & Книги", "Бизнес & финансы"],
+    "инфобизнес":       ["Образование & Книги", "Бизнес & финансы"],
+    "курс":             ["Образование & Книги"],
+    "обучение":         ["Образование & Книги"],
+    "бизнес":           ["Бизнес & финансы"],
+    "заработок":        ["Бизнес & финансы"],
+    "продажи":          ["Бизнес & финансы", "Маркетинг & PR"],
+    "контент":          ["Маркетинг & PR", "Блогеры"],
+    "telegram":         ["Маркетинг & PR"],
+    "телеграм":         ["Маркетинг & PR"],
+    "digital":          ["Маркетинг & PR"],
+    "диджитал":         ["Маркетинг & PR"],
+    "seo":              ["Маркетинг & PR", "Технологии & IT"],
+    "копирайт":         ["Маркетинг & PR"],
+    "нейросет":         ["Технологии & IT", "Маркетинг & PR"],
+    "ai":               ["Технологии & IT"],
+}
+
+# Категории по умолчанию если ключевое слово не найдено в карте
+DEFAULT_CATEGORIES = ["Маркетинг & PR", "Бизнес & финансы"]
+
 
 @dataclass
 class ChannelResult:
     name: str
-    username: str          # @handle
+    username: str
     subscribers: int
     description: str
     category: str = ""
     source: str = ""
-    url: str = ""
 
     def tg_link(self) -> str:
         return f"https://t.me/{self.username.lstrip('@')}"
@@ -44,213 +71,175 @@ class ChannelResult:
 
 
 def _parse_subscribers(text: str) -> int:
-    """'1.2M' → 1200000, '15.3K' → 15300, '9.02M' → 9020000"""
-    text = text.strip().upper().replace(",", ".").replace(" ", "")
+    text = text.strip().upper().replace(",", ".").replace("\xa0", "").replace(" ", "")
     try:
-        if "M" in text:
-            return int(float(text.replace("M", "")) * 1_000_000)
-        if "K" in text:
-            return int(float(text.replace("K", "")) * 1_000)
-        return int(re.sub(r"[^\d]", "", text))
+        if "M" in text or "М" in text:
+            num = re.sub(r"[^\d.]", "", text)
+            return int(float(num) * 1_000_000)
+        if "K" in text or "К" in text:
+            num = re.sub(r"[^\d.]", "", text)
+            return int(float(num) * 1_000)
+        digits = re.sub(r"[^\d]", "", text)
+        return int(digits) if digits else 0
     except Exception:
         return 0
 
 
-# ── tgsearch.org ──────────────────────────────────────────
+def _parse_page(html: str, source_label: str) -> list[ChannelResult]:
+    """Парсим одну страницу tgsearch.org."""
+    soup = BeautifulSoup(html, "html.parser")
+    results = []
 
-def search_tgsearch(query: str, page: int = 1) -> list[ChannelResult]:
-    """Поиск каналов на tgsearch.org."""
-    url = f"https://tgsearch.org/search?query={query}&page={page}"
-    results: list[ChannelResult] = []
-
-    try:
-        resp = httpx.get(url, headers=HEADERS, timeout=15, follow_redirects=True)
-        if resp.status_code != 200:
-            logger.warning(f"[tgsearch] HTTP {resp.status_code}")
-            return []
-
-        soup = BeautifulSoup(resp.text, "html.parser")
-
-        # Каждый канал — блок с классом содержащим channel/item
-        cards = soup.find_all("div", class_=re.compile(r"channel|item|card", re.I))
-
-        # Если не нашли через классы — ищем через структуру ссылок
-        if not cards:
-            cards = soup.find_all("li") or soup.find_all("article")
-
-        for card in cards:
-            try:
-                # Имя канала
-                name_el = card.find(["h2", "h3", "strong", "b"])
-                name = name_el.get_text(strip=True) if name_el else ""
-                if not name:
-                    continue
-
-                # Username (@handle)
-                username = ""
-                for a in card.find_all("a", href=True):
-                    href = a["href"]
-                    if "t.me/" in href:
-                        username = "@" + href.split("t.me/")[-1].strip("/")
-                        break
-                    if href.startswith("@"):
-                        username = href
-                        break
-
-                # Ищем @username в тексте карточки если не нашли в href
-                if not username:
-                    text_content = card.get_text()
-                    match = re.search(r"@([\w_]{3,32})", text_content)
-                    if match:
-                        username = "@" + match.group(1)
-
-                if not username:
-                    continue
-
-                # Подписчики
-                subs_text = ""
-                for el in card.find_all(["span", "div", "li"]):
-                    t = el.get_text(strip=True)
-                    if re.search(r"\d+[\.,]?\d*[KМMkм]?", t) and len(t) < 15:
-                        subs_text = t
-                        break
-
-                subscribers = _parse_subscribers(subs_text) if subs_text else 0
-
-                # Описание
-                desc_el = card.find("p")
-                description = desc_el.get_text(strip=True)[:200] if desc_el else ""
-
-                # Категория
-                cat_el = card.find("a", href=re.compile(r"search\?query=|category|cat"))
-                category = cat_el.get_text(strip=True) if cat_el else ""
-
-                results.append(ChannelResult(
-                    name=name,
-                    username=username,
-                    subscribers=subscribers,
-                    description=description,
-                    category=category,
-                    source="tgsearch.org",
-                    url=f"https://t.me/{username.lstrip('@')}",
-                ))
-
-            except Exception as e:
-                logger.debug(f"Ошибка парсинга карточки: {e}")
+    # Каждый канал — секция с заголовком h2 и списком ul
+    for h2 in soup.find_all("h2"):
+        try:
+            # Имя канала
+            name = h2.get_text(strip=True)
+            if not name or len(name) < 2:
                 continue
 
-        logger.info(f"[tgsearch] '{query}': найдено {len(results)} каналов")
+            # Родительский блок
+            parent = h2.find_parent(["div", "section", "article", "li"])
+            if not parent:
+                continue
 
-    except Exception as e:
-        logger.error(f"[tgsearch] Ошибка: {e}")
+            block_text = parent.get_text(separator="\n", strip=True)
 
-    return results
+            # Username — ищем @handle в блоке
+            username = ""
+            username_match = re.search(r"@([\w_]{3,32})", block_text)
+            if username_match:
+                username = "@" + username_match.group(1)
 
-
-# ── telemetr.me ───────────────────────────────────────────
-
-def search_telemetr(query: str) -> list[ChannelResult]:
-    """Поиск каналов на telemetr.me."""
-    url = f"https://telemetr.me/search?q={query}&type=channel"
-    results: list[ChannelResult] = []
-
-    try:
-        resp = httpx.get(url, headers=HEADERS, timeout=15, follow_redirects=True)
-        if resp.status_code != 200:
-            logger.warning(f"[telemetr] HTTP {resp.status_code}")
-            return []
-
-        soup = BeautifulSoup(resp.text, "html.parser")
-
-        # Ищем карточки каналов
-        cards = soup.find_all("div", class_=re.compile(r"channel|card|item|result", re.I))
-        if not cards:
-            cards = soup.find_all("a", href=re.compile(r"/channel/|@"))
-
-        for card in cards:
-            try:
-                text = card.get_text(separator=" ", strip=True)
-
-                # Username
-                username = ""
-                for a in card.find_all("a", href=True):
+            # Ищем в ссылках t.me/
+            if not username:
+                for a in parent.find_all("a", href=True):
                     if "t.me/" in a["href"]:
-                        username = "@" + a["href"].split("t.me/")[-1].strip("/")
-                        break
-                match = re.search(r"@([\w_]{3,32})", text)
-                if not username and match:
-                    username = "@" + match.group(1)
-                if not username:
-                    continue
+                        slug = a["href"].split("t.me/")[-1].strip("/")
+                        if slug and "+" not in slug:
+                            username = "@" + slug
+                            break
 
-                # Имя
-                name_el = card.find(["h2", "h3", "h4", "strong"])
-                name = name_el.get_text(strip=True) if name_el else username
-
-                # Подписчики
-                subs_match = re.search(r"([\d\s]+[,.]?\d*\s*[KkМMмm]?)\s*(подписчик|subscriber|чел)", text, re.I)
-                subscribers = _parse_subscribers(subs_match.group(1)) if subs_match else 0
-
-                # Описание
-                desc_el = card.find("p")
-                description = desc_el.get_text(strip=True)[:200] if desc_el else ""
-
-                results.append(ChannelResult(
-                    name=name,
-                    username=username,
-                    subscribers=subscribers,
-                    description=description,
-                    source="telemetr.me",
-                    url=f"https://t.me/{username.lstrip('@')}",
-                ))
-            except Exception:
+            if not username:
                 continue
 
-        logger.info(f"[telemetr] '{query}': найдено {len(results)} каналов")
+            # Подписчики — ищем паттерн числа с K/M
+            subs = 0
+            subs_match = re.search(
+                r"([\d]+[.,]?[\d]*\s*[KkМMмm])",
+                block_text
+            )
+            if subs_match:
+                subs = _parse_subscribers(subs_match.group(1))
 
-    except Exception as e:
-        logger.error(f"[telemetr] Ошибка: {e}")
+            # Описание — параграф внутри блока
+            desc = ""
+            p = parent.find("p")
+            if p:
+                desc = p.get_text(strip=True)[:200]
+
+            # Категория — ссылка с query=
+            cat = ""
+            for a in parent.find_all("a", href=re.compile(r"query=")):
+                cat_text = a.get_text(strip=True)
+                if cat_text and cat_text != name:
+                    cat = cat_text
+                    break
+
+            results.append(ChannelResult(
+                name=name,
+                username=username,
+                subscribers=subs,
+                description=desc,
+                category=cat,
+                source=source_label,
+            ))
+
+        except Exception as e:
+            logger.debug(f"Ошибка карточки: {e}")
+            continue
 
     return results
 
 
-# ── Главная функция поиска ────────────────────────────────
+def _fetch_tgsearch(query: str, page: int = 1) -> list[ChannelResult]:
+    """Один запрос к tgsearch.org."""
+    url = f"https://tgsearch.org/search?query={query}&page={page}"
+    try:
+        resp = httpx.get(url, headers=HEADERS, timeout=15, follow_redirects=True)
+        if resp.status_code != 200:
+            logger.warning(f"[tgsearch] HTTP {resp.status_code} для '{query}' стр.{page}")
+            return []
+        results = _parse_page(resp.text, "tgsearch.org")
+        logger.info(f"[tgsearch] '{query}' стр.{page}: {len(results)} каналов")
+        return results
+    except Exception as e:
+        logger.error(f"[tgsearch] Ошибка '{query}': {e}")
+        return []
 
-def search_channels(query: str, max_results: int = 15) -> list[ChannelResult]:
+
+def _get_categories_for_query(query: str) -> list[str]:
+    """Определяем какие категории добавить к поиску."""
+    query_lower = query.lower()
+    categories = []
+    for keyword, cats in KEYWORD_TO_CATEGORIES.items():
+        if keyword in query_lower:
+            for c in cats:
+                if c not in categories:
+                    categories.append(c)
+    if not categories:
+        categories = DEFAULT_CATEGORIES
+    return categories
+
+
+def search_channels(query: str, max_results: int = 30) -> list[ChannelResult]:
     """
-    Собираем результаты со всех источников,
-    фильтруем и сортируем по подписчикам.
+    Главная функция поиска.
+    Ищет по ключевому слову + по релевантным категориям,
+    парсит несколько страниц, фильтрует и сортирует.
     """
     all_results: list[ChannelResult] = []
+    seen_usernames: set[str] = set()
 
-    # Собираем с обоих источников
-    all_results.extend(search_tgsearch(query, page=1))
-    all_results.extend(search_tgsearch(query, page=2))
-    all_results.extend(search_telemetr(query))
+    def add_results(items: list[ChannelResult]):
+        for ch in items:
+            key = ch.username.lower().lstrip("@")
+            if key and key not in seen_usernames:
+                seen_usernames.add(key)
+                all_results.append(ch)
 
-    # Дедупликация по username
-    seen: set[str] = set()
-    unique: list[ChannelResult] = []
-    for ch in all_results:
-        key = ch.username.lower().lstrip("@")
-        if key and key not in seen:
-            seen.add(key)
-            unique.append(ch)
+    # 1. Поиск по ключевому слову (5 страниц)
+    for page in range(1, 6):
+        items = _fetch_tgsearch(query, page)
+        if not items:
+            break
+        add_results(items)
 
-    # Фильтр: публичный (есть @username) + минимум подписчиков
+    # 2. Поиск по категориям (3 страницы каждая)
+    categories = _get_categories_for_query(query)
+    for category in categories:
+        for page in range(1, 4):
+            items = _fetch_tgsearch(category, page)
+            if not items:
+                break
+            add_results(items)
+
+    logger.info(f"Всего уникальных до фильтра: {len(all_results)}")
+
+    # Фильтр: публичный канал + минимум подписчиков
     filtered = [
-        ch for ch in unique
+        ch for ch in all_results
         if ch.subscribers >= MIN_SUBSCRIBERS
         and ch.username
-        and not ch.username.startswith("@+")  # исключаем invite-ссылки
+        and not ch.username.startswith("@+")
     ]
 
-    # Сортировка по убыванию подписчиков
+    # Сортировка по подписчикам
     filtered.sort(key=lambda x: x.subscribers, reverse=True)
 
     logger.info(
-        f"Поиск '{query}': всего {len(all_results)} → "
-        f"уникальных {len(unique)} → после фильтра {len(filtered)}"
+        f"Поиск '{query}': {len(all_results)} → "
+        f"после фильтра {len(filtered)} → возвращаем {min(len(filtered), max_results)}"
     )
 
     return filtered[:max_results]
