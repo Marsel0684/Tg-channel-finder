@@ -1,5 +1,5 @@
 """
-scraper.py — поиск Telegram-каналов через tgsearch.org
+scraper.py — поиск Telegram-каналов по ключевым словам через tgsearch.org
 """
 
 import logging
@@ -20,77 +20,6 @@ HEADERS = {
     "Accept-Language": "ru-RU,ru;q=0.9",
 }
 
-# ── Категории tgsearch.org ────────────────────────────────
-# Ключ = что ищет пользователь, значение = категория на tgsearch
-CATEGORY_MAP: dict[str, str] = {
-    "маркетинг":     "Маркетинг & PR",
-    "реклама":       "Маркетинг & PR",
-    "таргет":        "Маркетинг & PR",
-    "таргетинг":     "Маркетинг & PR",
-    "smm":           "Маркетинг & PR",
-    "pr":            "Маркетинг & PR",
-    "пиар":          "Маркетинг & PR",
-    "digital":       "Маркетинг & PR",
-    "диджитал":      "Маркетинг & PR",
-    "копирайт":      "Маркетинг & PR",
-    "контент":       "Маркетинг & PR",
-    "продвижение":   "Маркетинг & PR",
-    "инфобиз":       "Образование & Книги",
-    "инфобизнес":    "Образование & Книги",
-    "курс":          "Образование & Книги",
-    "обучение":      "Образование & Книги",
-    "образование":   "Образование & Книги",
-    "бизнес":        "Бизнес & финансы",
-    "заработок":     "Бизнес & финансы",
-    "продажи":       "Бизнес & финансы",
-    "финансы":       "Бизнес & финансы",
-    "предприниматель": "Бизнес & финансы",
-    "стартап":       "Бизнес & финансы",
-    "seo":           "Технологии & IT",
-    "нейросет":      "Технологии & IT",
-    "нейросеть":     "Технологии & IT",
-    "ai":            "Технологии & IT",
-    "программир":    "Технологии & IT",
-    "python":        "Технологии & IT",
-    "блогер":        "Блогеры",
-    "блог":          "Блогеры",
-    "youtube":       "Блогеры",
-    "ютуб":          "Блогеры",
-    "instagram":     "Инстаграм",
-    "инстаграм":     "Инстаграм",
-    "здоровье":      "Здоровье & Медицина",
-    "медицин":       "Здоровье & Медицина",
-    "спорт":         "Спорт",
-    "фитнес":        "Спорт",
-    "игр":           "Игры",
-    "gaming":        "Игры",
-    "крипт":         "Криптовалюты",
-    "crypto":        "Криптовалюты",
-    "новост":        "Новости & СМИ",
-    "дизайн":        "Дизайн",
-    "юмор":          "Юмор & Мемы",
-    "мем":           "Юмор & Мемы",
-    "психолог":      "Психология",
-    "ислам":         "Религия",
-    "коран":         "Религия",
-    "таджвид":       "Религия",
-    "молитв":        "Религия",
-    "мусульман":     "Религия",
-    "православ":     "Религия",
-    "христиан":      "Религия",
-    "путешеств":     "Путешествия",
-    "туризм":        "Путешествия",
-    "кулинар":       "Еда & Кулинария",
-    "рецепт":        "Еда & Кулинария",
-    "еда":           "Еда & Кулинария",
-    "мода":          "Мода & Красота",
-    "красота":       "Мода & Красота",
-    "авто":          "Авто & Мото",
-    "машин":         "Авто & Мото",
-    "недвижим":      "Недвижимость",
-    "квартир":       "Недвижимость",
-}
-
 
 @dataclass
 class ChannelResult:
@@ -99,7 +28,6 @@ class ChannelResult:
     subscribers: int
     description: str
     category: str = ""
-    source: str = ""
 
     def tg_link(self) -> str:
         return f"https://t.me/{self.username.lstrip('@')}"
@@ -116,11 +44,9 @@ def _parse_subscribers(text: str) -> int:
     text = text.strip().upper().replace(",", ".").replace("\xa0", "").replace(" ", "")
     try:
         if "M" in text or "М" in text:
-            num = re.sub(r"[^\d.]", "", text)
-            return int(float(num) * 1_000_000)
+            return int(float(re.sub(r"[^\d.]", "", text)) * 1_000_000)
         if "K" in text or "К" in text:
-            num = re.sub(r"[^\d.]", "", text)
-            return int(float(num) * 1_000)
+            return int(float(re.sub(r"[^\d.]", "", text)) * 1_000)
         digits = re.sub(r"[^\d]", "", text)
         return int(digits) if digits else 0
     except Exception:
@@ -128,7 +54,6 @@ def _parse_subscribers(text: str) -> int:
 
 
 def _parse_page(html: str) -> list[ChannelResult]:
-    """Парсим одну страницу tgsearch.org."""
     soup = BeautifulSoup(html, "html.parser")
     results = []
 
@@ -185,17 +110,14 @@ def _parse_page(html: str) -> list[ChannelResult]:
                 subscribers=subs,
                 description=desc,
                 category=cat,
-                source="tgsearch.org",
             ))
         except Exception as e:
             logger.debug(f"Ошибка карточки: {e}")
-            continue
 
     return results
 
 
 def _fetch(query: str, page: int = 1) -> list[ChannelResult]:
-    """Один запрос к tgsearch.org."""
     url = f"https://tgsearch.org/search?query={query}&page={page}"
     try:
         resp = httpx.get(url, headers=HEADERS, timeout=15, follow_redirects=True)
@@ -209,68 +131,32 @@ def _fetch(query: str, page: int = 1) -> list[ChannelResult]:
         return []
 
 
-def _detect_category(query: str) -> str | None:
-    """Определяем категорию по ключевым словам в запросе."""
-    q = query.lower()
-    for keyword, category in CATEGORY_MAP.items():
-        if keyword in q:
-            return category
-    return None
-
-
 def search_channels(query: str, max_results: int = 30) -> list[ChannelResult]:
     """
-    Поиск каналов.
-    Логика:
-      1. Определяем категорию по запросу
-      2. Если категория найдена — ищем В КАТЕГОРИИ (релевантные результаты)
-      3. Параллельно ищем по ключевому слову
-      4. Фильтруем по подписчикам и сортируем
+    Ищем каналы по ключевому слову пользователя.
+    Парсим 8 страниц, фильтруем по подписчикам.
     """
     all_results: list[ChannelResult] = []
     seen: set[str] = set()
 
-    def add(items: list[ChannelResult]):
+    for page in range(1, 9):  # 8 страниц
+        items = _fetch(query, page)
+        if not items:
+            break
         for ch in items:
             key = ch.username.lower().lstrip("@")
             if key and key not in seen:
                 seen.add(key)
                 all_results.append(ch)
 
-    category = _detect_category(query)
-
-    if category:
-        # Режим категории: ищем В категории (главный источник)
-        logger.info(f"Запрос '{query}' → категория '{category}'")
-        for page in range(1, 6):
-            items = _fetch(category, page)
-            if not items:
-                break
-            add(items)
-    else:
-        # Нет категории — ищем по ключевому слову, несколько страниц
-        logger.info(f"Запрос '{query}' → поиск по слову")
-        for page in range(1, 6):
-            items = _fetch(query, page)
-            if not items:
-                break
-            add(items)
-
-    # Всегда добавляем поиск по самому слову для полноты
-    for page in range(1, 4):
-        items = _fetch(query, page)
-        if not items:
-            break
-        add(items)
-
-    # Фильтр и сортировка
+    # Фильтр по подписчикам
     filtered = [
         ch for ch in all_results
         if ch.subscribers >= MIN_SUBSCRIBERS
-        and ch.username
         and "+" not in ch.username
     ]
+
     filtered.sort(key=lambda x: x.subscribers, reverse=True)
 
-    logger.info(f"'{query}': всего {len(all_results)} → {len(filtered)} после фильтра")
+    logger.info(f"'{query}': {len(all_results)} найдено → {len(filtered)} после фильтра")
     return filtered[:max_results]

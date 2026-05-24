@@ -1,5 +1,5 @@
 """
-handlers.py — обработчики команд Telegram-бота.
+handlers.py — обработчики команд.
 """
 
 import logging
@@ -9,7 +9,7 @@ from aiogram.types import Message
 from aiogram.filters import CommandStart, Command
 from aiogram.utils.markdown import hbold, hlink
 
-from scraper import search_channels, ChannelResult, _detect_category
+from scraper import search_channels, ChannelResult
 from config import MAX_RESULTS, ALLOWED_USERS
 
 router = Router()
@@ -23,32 +23,27 @@ def _check_access(user_id: int) -> bool:
 
 
 def _format_channel(ch: ChannelResult, index: int) -> str:
-    lines = []
-    lines.append(f"{index}. {hbold(ch.name)}")
+    lines = [f"{index}. {hbold(ch.name)}"]
     lines.append(f"👤 {ch.username}  |  👥 {ch.subscribers_fmt()} подписчиков")
     if ch.category:
         lines.append(f"📂 {ch.category}")
     if ch.description:
-        desc = ch.description[:120]
-        if len(ch.description) > 120:
-            desc += "…"
+        desc = ch.description[:120] + ("…" if len(ch.description) > 120 else "")
         lines.append(f"📝 {desc}")
     lines.append(f"🔗 {hlink('Открыть канал', ch.tg_link())}")
     return "\n".join(lines)
 
 
-def _format_results(channels: list[ChannelResult], query: str, category: str | None) -> list[str]:
+def _format_results(channels: list[ChannelResult], query: str) -> list[str]:
     if not channels:
         return [
             f"😔 По запросу <b>{query}</b> ничего не найдено.\n\n"
-            "Попробуй другое ключевое слово:\n"
-            "• маркетинг\n• инфобизнес\n• таргетинг\n• SMM\n• бизнес"
+            "Попробуй другое ключевое слово."
         ]
 
     messages = []
-    cat_info = f" (категория: {category})" if category else ""
     header = (
-        f"🔍 Найдено каналов по запросу <b>{query}</b>{cat_info}: {len(channels)}\n"
+        f"🔍 Результаты по запросу <b>{query}</b>: {len(channels)} каналов\n"
         f"Фильтр: публичные · от 1 000 подписчиков\n"
         + "─" * 30
     )
@@ -70,59 +65,33 @@ def _format_results(channels: list[ChannelResult], query: str, category: str | N
 async def cmd_start(message: Message):
     if not _check_access(message.from_user.id):
         return
-    text = (
+    await message.answer(
         "👋 <b>Channel Finder</b> — поиск Telegram-каналов для рекламы\n\n"
-        "<b>Как использовать:</b>\n"
+        "Напиши ключевое слово или используй /search:\n\n"
         "/search маркетинг\n"
         "/search таджвид\n"
-        "/search фитнес\n\n"
-        "Или просто напиши ключевое слово.\n\n"
-        "Бот автоматически определяет категорию и ищет релевантные каналы.\n"
-        "/categories — посмотреть все категории"
+        "/search фитнес Москва\n\n"
+        f"Показывает до {MAX_RESULTS} каналов · от 1 000 подписчиков"
     )
-    await message.answer(text)
-
-
-@router.message(Command("categories"))
-async def cmd_categories(message: Message):
-    if not _check_access(message.from_user.id):
-        return
-    text = (
-        "📂 <b>Поддерживаемые категории</b>\n\n"
-        "🎯 <b>Маркетинг & PR</b>\n"
-        "   маркетинг, реклама, таргет, SMM, digital, контент, продвижение\n\n"
-        "💼 <b>Бизнес & финансы</b>\n"
-        "   бизнес, продажи, заработок, финансы, стартап\n\n"
-        "📚 <b>Образование & Книги</b>\n"
-        "   инфобиз, курс, обучение, образование\n\n"
-        "💻 <b>Технологии & IT</b>\n"
-        "   SEO, нейросети, AI, программирование, python\n\n"
-        "🕌 <b>Религия</b>\n"
-        "   ислам, коран, таджвид, молитва, православие\n\n"
-        "💪 <b>Спорт</b>\n"
-        "   спорт, фитнес\n\n"
-        "✈️ <b>Путешествия</b>\n"
-        "   путешествия, туризм\n\n"
-        "🍕 <b>Еда & Кулинария</b>\n"
-        "   кулинария, рецепты, еда\n\n"
-        "И ещё 15+ категорий — просто пиши любое слово!"
-    )
-    await message.answer(text)
 
 
 @router.message(Command("help"))
 async def cmd_help(message: Message):
     if not _check_access(message.from_user.id):
         return
-    text = (
+    await message.answer(
         "📖 <b>Справка</b>\n\n"
         "/search [запрос] — поиск каналов\n"
-        "/categories — список категорий\n"
         "/help — эта справка\n\n"
-        f"Минимум подписчиков: 1 000\n"
-        f"Максимум результатов: {MAX_RESULTS}"
+        "<b>Примеры:</b>\n"
+        "• /search маркетинг\n"
+        "• /search таджвид\n"
+        "• /search фитнес\n"
+        "• /search python курс\n"
+        "• /search бизнес Казахстан\n\n"
+        f"Максимум результатов: {MAX_RESULTS}\n"
+        f"Минимум подписчиков: 1 000"
     )
-    await message.answer(text)
 
 
 @router.message(Command("search"))
@@ -147,22 +116,16 @@ async def msg_search(message: Message):
 
 
 async def _do_search(message: Message, query: str):
-    category = _detect_category(query)
-    cat_hint = f" в категории <b>{category}</b>" if category else ""
-    wait_msg = await message.answer(f"🔍 Ищу каналы{cat_hint}...")
-
+    wait_msg = await message.answer(f"🔍 Ищу каналы по запросу <b>{query}</b>...")
     try:
         loop = asyncio.get_event_loop()
         channels = await loop.run_in_executor(
             None, search_channels, query, MAX_RESULTS
         )
         await wait_msg.delete()
-
-        messages = _format_results(channels, query, category)
-        for msg_text in messages:
+        for msg_text in _format_results(channels, query):
             await message.answer(msg_text, disable_web_page_preview=True)
             await asyncio.sleep(0.3)
-
     except Exception as e:
         logger.error(f"Ошибка поиска '{query}': {e}")
         await wait_msg.edit_text("❌ Ошибка при поиске. Попробуй снова.")
